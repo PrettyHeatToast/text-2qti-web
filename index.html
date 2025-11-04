@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Text2QTI - Markdown to QTI Quiz Converter</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Text2QTI Converter</h1>
+            <p class="subtitle">Convert Markdown-based quiz text to QTI 1.2 format for Canvas</p>
+        </header>
+
+        <div class="toolbar">
+            <div class="toolbar-left">
+                <button id="loadExampleBtn" class="btn btn--secondary">Load Example</button>
+                <select id="exampleSelect" class="form-control" style="width: auto; display: inline-block;">
+                    <option value="">Select an example...</option>
+                    <option value="math">Math Addition Quiz</option>
+                    <option value="biology">Biology True/False Quiz</option>
+                    <option value="multiple">Multiple Answers Quiz</option>
+                    <option value="mixed">Mixed Question Types</option>
+                </select>
+                <button id="clearBtn" class="btn btn--outline">Clear</button>
+            </div>
+            <div class="toolbar-right">
+                <button id="downloadBtn" class="btn btn--primary">Download QTI Zip</button>
+            </div>
+        </div>
+
+        <div id="errorContainer" class="error-container" style="display: none;"></div>
+        <div id="statusContainer" class="status-container" style="display: none;"></div>
+
+        <div class="main-content">
+            <div class="editor-panel">
+                <div class="panel-header">
+                    <h2>Quiz Text Editor</h2>
+                    <span class="help-text">Enter your quiz in text2qti format</span>
+                </div>
+                <textarea id="quizEditor" class="quiz-editor" placeholder="Quiz title: My Quiz&#10;Quiz description: This is a sample quiz.&#10;&#10;1. What is 2+2?&#10;   a) 3&#10;   b) 5&#10;   *c) 4&#10;   d) 6&#10;&#10;2. The sky is blue.&#10;   *a) true&#10;   b) false"></textarea>
+            </div>
+
+            <div class="preview-panel">
+                <div class="panel-header">
+                    <h2>Quiz Preview</h2>
+                    <span class="help-text">Live preview of your quiz</span>
+                </div>
+                <div id="quizPreview" class="quiz-preview">
+                    <div class="empty-state">Start typing to see preview...</div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Based on <a href="https://github.com/gpoore/text2qti" target="_blank">gpoore/text2qti</a></p>
+        </footer>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
