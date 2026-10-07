@@ -1004,6 +1004,21 @@ header h1 {
   font-size: var(--font-size-sm);
 }
 
+.warning-container {
+  background: rgba(230, 129, 97, 0.1);
+  border: 1px solid #e68161;
+  color: var(--color-text);
+  padding: var(--space-12) var(--space-16);
+  border-radius: var(--radius-base);
+  margin-bottom: var(--space-16);
+  font-size: var(--font-size-sm);
+}
+
+.warning-container ul {
+  margin: var(--space-8) 0 0;
+  padding-left: var(--space-20);
+}
+
 .status-container {
   background: rgba(var(--color-teal-500-rgb), 0.1);
   border: 1px solid var(--color-success);
