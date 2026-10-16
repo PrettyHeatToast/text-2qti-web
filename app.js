@@ -70,7 +70,8 @@ Format rules:
 - Open/essay question: a line with "____".
 - File upload: a line with "^^^^".
 - Feedback (optional): "... text" directly under the question text is general feedback, "... text" under an answer is feedback for that answer, "+ text" is feedback for correct, "- text" is feedback for incorrect.
-- Plain text only: no Markdown, no bold, no tables, no images (write "[image missing]" instead).
+- Plain text only: no Markdown, no bold, no tables.
+- Images: where the source has a figure or picture, write ![short description](figure1.png) on its own line (figure1.png, figure2.png, ... in order). The user adds the actual files afterwards. Do not describe the image elsewhere.
 
 Example:
 
@@ -98,9 +99,58 @@ Points: 1.5
 The test to convert:
 `;
 
+// Attachments: allowed types and size limits
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'];
+const ATTACHMENT_EXTENSIONS = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'zip'];
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+
+// Matches ![alt](target) (image) and [text](target) (attachment link) in plain quiz text
+const RESOURCE_PATTERN = /(!?)\[([^\]\n]*)\]\(([^)\s]+)\)/g;
+
+function fileExtension(name) {
+  const m = String(name).toLowerCase().match(/\.([a-z0-9]+)$/);
+  return m ? m[1] : '';
+}
+
+function isRemoteUrl(target) {
+  return /^https?:\/\//i.test(target);
+}
+
+function escapeHtmlText(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Plain text -> HTML. Everything is escaped; only ![alt](target) and [text](target) become
+// <img>/<a>, and only when resolveSrc(target) returns a URL (null leaves the text as-is).
+function richTextToHtml(text, resolveSrc) {
+  let out = '';
+  let last = 0;
+  String(text).replace(RESOURCE_PATTERN, (full, bang, label, target, offset) => {
+    out += escapeHtmlText(text.slice(last, offset));
+    last = offset + full.length;
+    const src = resolveSrc(target);
+    if (src === null) {
+      out += escapeHtmlText(full);
+    } else if (bang) {
+      out += `<img src="${escapeHtmlText(src)}" alt="${escapeHtmlText(label)}"/>`;
+    } else {
+      out += `<a href="${escapeHtmlText(src)}">${escapeHtmlText(label || target)}</a>`;
+    }
+    return full;
+  });
+  out += escapeHtmlText(String(text).slice(last));
+  return out.replace(/\n/g, '<br/>');
+}
+
 // Parser class
 class Text2QTIParser {
-  constructor(text) {
+  constructor(text, fileNames = new Set()) {
+    this.fileNames = fileNames;
     // Strip Markdown code fences that AI tools often wrap around their output
     this.lines = text.split('\n').filter(line => !/^\s*```/.test(line));
     this.currentLine = 0;
@@ -114,7 +164,8 @@ class Text2QTIParser {
         oneQuestionAtATime: false,
         cantGoBack: false
       },
-      questions: []
+      questions: [],
+      resources: []
     };
     this.errors = [];
     this.warnings = [];
@@ -145,6 +196,7 @@ class Text2QTIParser {
       }
 
       this.quiz.questions.forEach((q, i) => this.validateQuestion(q, i));
+      this.collectResources();
       if (this.quiz.questions.length === 0 && this.lines.some(l => l.trim() !== '')) {
         this.warnings.push('No questions found. Questions must start with a number and a period, like "1. Question text".');
       }
@@ -373,6 +425,42 @@ class Text2QTIParser {
     };
   }
 
+  // Finds ![alt](file) / [text](file) references, checks them against the added files
+  collectResources() {
+    const used = new Set();
+    const warned = new Set();
+    this.quiz.questions.forEach((q, i) => {
+      const label = `Question ${q.number || i + 1}`;
+      const texts = [q.text, q.feedback.general, q.feedback.correct, q.feedback.incorrect];
+      if (q.type === 'multiple_choice' || q.type === 'multiple_answers') {
+        q.answers.forEach(a => texts.push(a.text));
+      }
+      q.answers.forEach(a => texts.push(a.feedback));
+      texts.filter(Boolean).forEach(text => {
+        for (const m of text.matchAll(RESOURCE_PATTERN)) {
+          const [, bang, alt, target] = m;
+          if (isRemoteUrl(target) || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
+          if (!this.fileNames.has(target)) {
+            if (!warned.has(label + target)) {
+              warned.add(label + target);
+              this.warnings.push(`${label}: file "${target}" has not been added (use "Add files").`);
+            }
+            continue;
+          }
+          used.add(target);
+          if (bang && !alt.trim() && !warned.has('alt' + target)) {
+            warned.add('alt' + target);
+            this.warnings.push(`${label}: image "${target}" has no description; write it as ![description](${target}).`);
+          }
+        }
+      });
+    });
+    this.quiz.resources = [...used];
+    this.fileNames.forEach(name => {
+      if (!used.has(name)) this.warnings.push(`File "${name}" is not used in any question.`);
+    });
+  }
+
   // Flags problems that would give a wrong or unusable question after import
   validateQuestion(q, index) {
     const label = `Question ${q.number || index + 1}`;
@@ -414,8 +502,9 @@ class Text2QTIParser {
 
 // QTI Generator class (Canvas-compatible QTI 1.2, mirrors the structure produced by text2qti)
 class QTIGenerator {
-  constructor(quiz) {
+  constructor(quiz, files = new Map()) {
     this.quiz = quiz;
+    this.files = files;
     this.assessmentId = 'quiz_' + Date.now();
   }
 
@@ -459,8 +548,25 @@ class QTIGenerator {
     <resource identifier="${id}_dependency" type="associatedcontent/imscc_xmlv1p1/learning-application-resource" href="${id}/assessment_meta.xml">
       <file href="${id}/assessment_meta.xml"/>
     </resource>
-  </resources>
+${this.generateFileResources()}  </resources>
 </manifest>`;
+  }
+
+  // Path of an attached file inside the zip (images/ for images, files/ for other attachments)
+  zipPath(name) {
+    return `${IMAGE_EXTENSIONS.includes(fileExtension(name)) ? 'images' : 'files'}/${name}`;
+  }
+
+  xmlPath(name) {
+    const folder = this.zipPath(name).split('/')[0];
+    return `${folder}/${encodeURIComponent(name)}`;
+  }
+
+  generateFileResources() {
+    return (this.quiz.resources || [])
+      .filter(name => this.files.has(name))
+      .map((name, i) => `    <resource identifier="${this.assessmentId}_file_${i + 1}" type="webcontent" href="${this.escapeXml(this.xmlPath(name))}">\n      <file href="${this.escapeXml(this.xmlPath(name))}"/>\n    </resource>\n`)
+      .join('');
   }
 
   generateAssessmentMeta() {
@@ -787,13 +893,12 @@ class QTIGenerator {
       .replace(/'/g, '&apos;');
   }
 
-  // Plain text -> HTML paragraph (HTML-escaped), then XML-escaped for use inside an element
+  // Plain text -> HTML paragraph (escaped, attachments resolved), then XML-escaped for use inside an element
   html(text) {
-    const htmlText = String(text)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/\n/g, '<br/>');
+    const htmlText = richTextToHtml(text, target => {
+      if (isRemoteUrl(target)) return target;
+      return this.files.has(target) ? `%24IMS-CC-FILEBASE%24/${this.xmlPath(target)}` : null;
+    });
     return this.escapeXml(`<p>${htmlText}</p>`);
   }
 
@@ -805,6 +910,9 @@ class QTIGenerator {
     const folder = zip.folder(id);
     folder.file('assessment_meta.xml', this.generateAssessmentMeta());
     folder.file(`${id}.xml`, this.generateAssessment());
+    (this.quiz.resources || []).forEach(name => {
+      if (this.files.has(name)) zip.file(this.zipPath(name), this.files.get(name));
+    });
 
     return await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
   }
@@ -824,6 +932,11 @@ class UIController {
     this.warningContainer = document.getElementById('warningContainer');
     this.copyPromptBtn = document.getElementById('copyPromptBtn');
     
+    this.addFilesBtn = document.getElementById('addFilesBtn');
+    this.fileInput = document.getElementById('fileInput');
+    this.fileList = document.getElementById('fileList');
+    this.files = new Map(); // name -> { blob, url }
+
     this.currentQuiz = null;
     this.currentErrors = [];
     
@@ -837,6 +950,32 @@ class UIController {
     this.clearBtn.addEventListener('click', () => this.handleClear());
     this.loadExampleBtn.addEventListener('click', () => this.handleLoadExample());
     this.copyPromptBtn.addEventListener('click', () => this.handleCopyPrompt());
+    this.addFilesBtn.addEventListener('click', () => this.fileInput.click());
+    this.fileInput.addEventListener('change', () => {
+      this.addFiles([...this.fileInput.files]);
+      this.fileInput.value = '';
+    });
+    this.editor.addEventListener('dragover', e => {
+      if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) {
+        e.preventDefault();
+        this.editor.classList.add('drag-over');
+      }
+    });
+    this.editor.addEventListener('dragleave', () => this.editor.classList.remove('drag-over'));
+    this.editor.addEventListener('drop', e => {
+      this.editor.classList.remove('drag-over');
+      if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+        e.preventDefault();
+        this.addFiles([...e.dataTransfer.files], true);
+      }
+    });
+    this.editor.addEventListener('paste', e => {
+      const files = [...((e.clipboardData && e.clipboardData.files) || [])];
+      if (files.length > 0) {
+        e.preventDefault();
+        this.addFiles(files, true);
+      }
+    });
     
     // Initial parse
     this.handleEditorChange();
@@ -855,7 +994,7 @@ class UIController {
       return;
     }
     
-    const parser = new Text2QTIParser(text);
+    const parser = new Text2QTIParser(text, new Set(this.files.keys()));
     const result = parser.parse();
     
     this.currentQuiz = result.quiz;
@@ -896,6 +1035,85 @@ class UIController {
       this.showStatus('Could not access the clipboard; the prompt was placed in the editor instead.');
     }
     setTimeout(() => this.updateStatus(), 4000);
+  }
+
+  // Adds files; with insertRefs, also inserts a reference at the cursor (drop/paste)
+  addFiles(files, insertRefs = false) {
+    const problems = [];
+    const refs = [];
+    files.forEach(file => {
+      const ext = fileExtension(file.name) || (file.type.startsWith('image/') ? file.type.slice(6).replace('jpeg', 'jpg').replace('svg+xml', 'svg') : '');
+      if (![...IMAGE_EXTENSIONS, ...ATTACHMENT_EXTENSIONS].includes(ext)) {
+        problems.push(`"${file.name}": file type not supported.`);
+        return;
+      }
+      if (file.size > MAX_FILE_BYTES) {
+        problems.push(`"${file.name}": larger than ${MAX_FILE_BYTES / 1024 / 1024} MB.`);
+        return;
+      }
+      const total = [...this.files.values()].reduce((sum, f) => sum + f.blob.size, 0);
+      if (total + file.size > MAX_TOTAL_BYTES) {
+        problems.push(`"${file.name}": total size would exceed ${MAX_TOTAL_BYTES / 1024 / 1024} MB.`);
+        return;
+      }
+      const name = this.uniqueFileName(file.name, ext);
+      this.files.set(name, { blob: file, url: URL.createObjectURL(file) });
+      refs.push(IMAGE_EXTENSIONS.includes(ext) ? `![](${name})` : `[${name}](${name})`);
+    });
+    if (insertRefs && refs.length > 0) {
+      const start = this.editor.selectionStart;
+      const end = this.editor.selectionEnd;
+      this.editor.setRangeText(refs.join('\n'), start, end, 'end');
+    }
+    this.renderFileList();
+    this.handleEditorChange();
+    if (problems.length > 0) {
+      this.showError(problems.map(p => this.escapeHtml(p)).join('<br>'));
+      setTimeout(() => this.hideError(), 6000);
+    }
+  }
+
+  // Safe, unique file name (no spaces/special characters, so references stay simple)
+  uniqueFileName(original, ext) {
+    let base = original.replace(/\.[^.]*$/, '').replace(/[^\w\-]+/g, '_').replace(/^_+|_+$/g, '') || 'file';
+    if (original === 'image.png' || /^image\.\w+$/.test(original)) base = 'afbeelding';
+    let name = `${base}.${ext}`;
+    for (let i = 2; this.files.has(name); i++) {
+      name = `${base}_${i}.${ext}`;
+    }
+    return name;
+  }
+
+  removeFile(name) {
+    const entry = this.files.get(name);
+    if (entry) URL.revokeObjectURL(entry.url);
+    this.files.delete(name);
+    this.renderFileList();
+    this.handleEditorChange();
+  }
+
+  renderFileList() {
+    this.fileList.innerHTML = '';
+    this.files.forEach((entry, name) => {
+      const li = document.createElement('li');
+      li.appendChild(document.createTextNode(name));
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = '×';
+      btn.title = `Remove ${name}`;
+      btn.addEventListener('click', () => this.removeFile(name));
+      li.appendChild(btn);
+      this.fileList.appendChild(li);
+    });
+  }
+
+  // Quiz text -> preview HTML (attachments resolve to local blob URLs)
+  richPreview(text) {
+    return richTextToHtml(text, target => {
+      if (isRemoteUrl(target)) return target;
+      const entry = this.files.get(target);
+      return entry ? entry.url : null;
+    });
   }
 
   renderPreview(quiz) {
@@ -946,7 +1164,7 @@ class UIController {
       html.push(`  <div class="question-title">${this.escapeHtml(question.title)}</div>`);
     }
     
-    html.push(`  <div class="question-text">${this.escapeHtml(question.text).replace(/\n/g, '<br>')}</div>`);
+    html.push(`  <div class="question-text">${this.richPreview(question.text)}</div>`);
     
     // Render answers based on type
     if (question.type === 'multiple_choice' || question.type === 'multiple_answers') {
@@ -956,7 +1174,7 @@ class UIController {
         const prefix = answer.correct ? (question.type === 'multiple_answers' ? '[✓]' : '*') : '';
         html.push(`    <div class="answer ${correctClass}">`);
         html.push(`      <span class="answer-prefix">${answer.id})${prefix}</span>`);
-        html.push(`      ${this.escapeHtml(answer.text)}`);
+        html.push(`      ${this.richPreview(answer.text)}`);
         html.push('    </div>');
       });
       html.push('  </div>');
@@ -1002,16 +1220,16 @@ class UIController {
       html.push('  <div class="feedback">');
       html.push('    <div class="feedback-title">Feedback:</div>');
       if (question.feedback.general) {
-        html.push(`    <div class="feedback-item"><strong>General:</strong> ${this.escapeHtml(question.feedback.general)}</div>`);
+        html.push(`    <div class="feedback-item"><strong>General:</strong> ${this.richPreview(question.feedback.general)}</div>`);
       }
       if (question.feedback.correct) {
-        html.push(`    <div class="feedback-item"><strong>Correct:</strong> ${this.escapeHtml(question.feedback.correct)}</div>`);
+        html.push(`    <div class="feedback-item"><strong>Correct:</strong> ${this.richPreview(question.feedback.correct)}</div>`);
       }
       if (question.feedback.incorrect) {
-        html.push(`    <div class="feedback-item"><strong>Incorrect:</strong> ${this.escapeHtml(question.feedback.incorrect)}</div>`);
+        html.push(`    <div class="feedback-item"><strong>Incorrect:</strong> ${this.richPreview(question.feedback.incorrect)}</div>`);
       }
       answerFeedback.forEach(answer => {
-        html.push(`    <div class="feedback-item"><strong>For ${this.escapeHtml(answer.id)}:</strong> ${this.escapeHtml(answer.feedback)}</div>`);
+        html.push(`    <div class="feedback-item"><strong>For ${this.escapeHtml(answer.id)}:</strong> ${this.richPreview(answer.feedback)}</div>`);
       });
       html.push('  </div>');
     }
@@ -1045,7 +1263,7 @@ class UIController {
       this.downloadBtn.disabled = true;
       this.downloadBtn.textContent = 'Generating...';
       
-      const generator = new QTIGenerator(this.currentQuiz);
+      const generator = new QTIGenerator(this.currentQuiz, new Map([...this.files].map(([n, e]) => [n, e.blob])));
       const blob = await generator.generateZip();
       
       // Trigger download
