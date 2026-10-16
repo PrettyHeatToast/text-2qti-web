@@ -1323,3 +1323,14 @@ footer a:hover {
 .file-list button { border: 0; background: none; cursor: pointer; font-size: 14px; line-height: 1; }
 .quiz-editor.drag-over { outline: 2px dashed #2a7de1; }
 .quiz-preview img { max-width: 100%; height: auto; }
+
+/* Word image import dialog */
+.docx-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.docx-dialog { background: var(--color-surface, #fff); color: inherit; border-radius: 8px; padding: 16px; width: min(560px, 92vw); max-height: 85vh; display: flex; flex-direction: column; gap: 8px; }
+.docx-dialog h3 { margin: 0; }
+.docx-list { list-style: none; margin: 0; padding: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.docx-list li { display: flex; align-items: center; gap: 12px; padding: 6px; border: 1px solid #ccc; border-radius: 6px; }
+.docx-list label { display: flex; align-items: center; gap: 8px; min-width: 110px; font-weight: 600; }
+.docx-list img { max-height: 80px; max-width: 200px; object-fit: contain; }
+.docx-list li.docx-off { opacity: .45; }
+.docx-buttons { display: flex; justify-content: flex-end; gap: 8px; }
