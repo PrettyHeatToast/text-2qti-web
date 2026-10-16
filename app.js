@@ -1023,6 +1023,9 @@ class UIController {
       if (files.length > 0) {
         e.preventDefault();
         this.addFiles(files, true);
+      } else {
+        // pasted AI output: fix figure extensions once the text is in the editor
+        setTimeout(() => this.fixFigureExtensions(), 0);
       }
     });
     
@@ -1129,6 +1132,28 @@ class UIController {
     setTimeout(() => this.updateStatus(), 4000);
   }
 
+  // The AI always writes figureN.png, but the image in the document may be a jpg/gif/...:
+  // point such references at the file that was really added. Returns the number of corrections.
+  fixFigureExtensions() {
+    const actual = new Map();
+    this.files.forEach((entry, name) => {
+      const m = name.match(/^(figure\d+)\.(\w+)$/);
+      if (m) actual.set(m[1], name);
+    });
+    let count = 0;
+    const text = this.editor.value.replace(/(\]\()(figure\d+)\.(\w+)(\))/g, (all, open, base, ext, close) => {
+      const name = actual.get(base);
+      if (!name || name === `${base}.${ext}`) return all;
+      count++;
+      return `${open}${name}${close}`;
+    });
+    if (count > 0) {
+      this.editor.value = text;
+      this.handleEditorChange();
+    }
+    return count;
+  }
+
   // Takes the pictures out of the original Word document and adds them as figure1, figure2, ...
   async importDocxImages(file) {
     let result;
@@ -1147,8 +1172,10 @@ class UIController {
         : `No supported images found in "${file.name}" (${result.skipped.join(', ')}).`);
     } else {
       this.addFiles(result.images);
+      const fixed = this.fixFigureExtensions();
       let message = `${result.images.length} image(s) from "${file.name}" added as figure1-figure${result.total}.`;
       if (result.skipped.length > 0) message += ` Skipped (unsupported format): ${result.skipped.join(', ')}.`;
+      if (fixed > 0) message += ` Corrected the file extension of ${fixed} reference(s) in the text.`;
       this.showStatus(message);
     }
     setTimeout(() => this.updateStatus(), 6000);
