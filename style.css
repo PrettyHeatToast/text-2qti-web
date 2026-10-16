@@ -1299,3 +1299,10 @@ footer a:hover {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-secondary);
 }
+/* Attachments */
+.file-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.file-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+.file-list li { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid #ccc; border-radius: 12px; font-size: 13px; }
+.file-list button { border: 0; background: none; cursor: pointer; font-size: 14px; line-height: 1; }
+.quiz-editor.drag-over { outline: 2px dashed #2a7de1; }
+.quiz-preview img { max-width: 100%; height: auto; }

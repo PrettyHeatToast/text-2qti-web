@@ -41,6 +41,12 @@
                     <h2>Quiz Text Editor</h2>
                     <span class="help-text">Enter your quiz in text2qti format</span>
                 </div>
+                <div class="file-bar">
+                    <button id="addFilesBtn" class="btn btn--outline" title="Add images or attachments, or drop/paste them in the editor">Add files</button>
+                    <input type="file" id="fileInput" multiple hidden>
+                    <span class="help-text">Use ![description](file.png) for images and [text](file.pdf) for attachments</span>
+                    <ul id="fileList" class="file-list"></ul>
+                </div>
                 <textarea id="quizEditor" class="quiz-editor" placeholder="Quiz title: My Quiz&#10;Quiz description: This is a sample quiz.&#10;&#10;1. What is 2+2?&#10;   a) 3&#10;   b) 5&#10;   *c) 4&#10;   d) 6&#10;&#10;2. The sky is blue.&#10;   *a) true&#10;   b) false"></textarea>
             </div>
 
