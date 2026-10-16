@@ -10,6 +10,7 @@ Webtool die quizzen in [text2qti](https://github.com/gpoore/text2qti)-formaat om
 
 ## Afbeeldingen en bijlagen
 
+- Klik op **Import images from Word** en kies het originele .docx: alle afbeeldingen worden in documentvolgorde toegevoegd als `figure1.png`, `figure2.png`, … (de namen uit de AI-prompt), zodat de verwijzingen in de AI-output meteen kloppen. Afbeeldingen in kop-/voetteksten worden overgeslagen; EMF/WMF/TIFF worden niet ondersteund. Een nieuwe import vervangt de eerdere `figureN`-bestanden.
 - Voeg bestanden toe met **Add files**, sleep ze in de editor, of plak een afbeelding uit het klembord.
 - Gebruik `![beschrijving](figuur1.png)` voor een afbeelding en `[tekst](bijlage.pdf)` voor een bijlage; dit kan in vraagtekst, antwoorden en feedback.
 - Ondersteund: png, jpg, gif, svg, webp, pdf, doc(x), xls(x), ppt(x), txt, csv, zip. Maximaal 5 MB per bestand en 50 MB in totaal.
