@@ -44,6 +44,8 @@
                 <div class="file-bar">
                     <button id="addFilesBtn" class="btn btn--outline" title="Add images or attachments, or drop/paste them in the editor">Add files</button>
                     <input type="file" id="fileInput" multiple hidden>
+                    <button id="importDocxBtn" class="btn btn--outline" title="Take all images out of the original Word document (as figure1, figure2, ... in document order)">Import images from Word</button>
+                    <input type="file" id="docxInput" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
                     <span class="help-text">Use ![description](file.png) for images and [text](file.pdf) for attachments</span>
                     <ul id="fileList" class="file-list"></ul>
                 </div>

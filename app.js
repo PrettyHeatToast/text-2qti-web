@@ -105,6 +105,46 @@ const ATTACHMENT_EXTENSIONS = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
+const IMAGE_MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp' };
+// Extracts the images of a .docx in document order as figure1.<ext>, figure2.<ext>, ...
+// (the names the AI prompt uses). Header/footer images are ignored; unsupported formats are skipped
+// but keep their number, so the numbering matches the order of the pictures in the document.
+async function extractDocxImages(file) {
+  const zip = await JSZip.loadAsync(file);
+  const documentFile = zip.file('word/document.xml');
+  const relsFile = zip.file('word/_rels/document.xml.rels');
+  if (!documentFile || !relsFile) throw new Error('not a Word document');
+
+  const rels = new Map();
+  new DOMParser().parseFromString(await relsFile.async('string'), 'application/xml')
+    .querySelectorAll('Relationship').forEach(rel => {
+      if (rel.getAttribute('TargetMode') !== 'External') rels.set(rel.getAttribute('Id'), rel.getAttribute('Target'));
+    });
+
+  // mc:Fallback holds a second (VML) copy of every DrawingML picture
+  const xml = (await documentFile.async('string')).replace(/<mc:Fallback>[\s\S]*?<\/mc:Fallback>/g, '');
+  const seen = new Set();
+  const images = [];
+  const skipped = [];
+  for (const match of xml.matchAll(/<(?:a:blip|v:imagedata)\b[^>]*?\sr:(?:embed|id)="([^"]+)"/g)) {
+    const target = rels.get(match[1]);
+    if (!target) continue;
+    const path = target.startsWith('/') ? target.slice(1) : `word/${target}`;
+    if (seen.has(path)) continue;
+    seen.add(path);
+    const number = seen.size;
+    const ext = fileExtension(path);
+    const entry = zip.file(path);
+    if (!entry || !IMAGE_EXTENSIONS.includes(ext)) {
+      skipped.push(`figure${number} (${ext || 'unknown'})`);
+      continue;
+    }
+    const blob = await entry.async('blob');
+    images.push(new File([blob], `figure${number}.${ext}`, { type: IMAGE_MIME[ext] }));
+  }
+  return { images, skipped, total: seen.size };
+}
+
 // Matches ![alt](target) (image) and [text](target) (attachment link) in plain quiz text
 const RESOURCE_PATTERN = /(!?)\[([^\]\n]*)\]\(([^)\s]+)\)/g;
 
@@ -936,6 +976,8 @@ class UIController {
     this.addFilesBtn = document.getElementById('addFilesBtn');
     this.fileInput = document.getElementById('fileInput');
     this.fileList = document.getElementById('fileList');
+    this.importDocxBtn = document.getElementById('importDocxBtn');
+    this.docxInput = document.getElementById('docxInput');
     this.files = new Map(); // name -> { blob, url }
 
     this.currentQuiz = null;
@@ -955,6 +997,12 @@ class UIController {
     this.fileInput.addEventListener('change', () => {
       this.addFiles([...this.fileInput.files]);
       this.fileInput.value = '';
+    });
+    this.importDocxBtn.addEventListener('click', () => this.docxInput.click());
+    this.docxInput.addEventListener('change', () => {
+      const file = this.docxInput.files[0];
+      this.docxInput.value = '';
+      if (file) this.importDocxImages(file);
     });
     this.editor.addEventListener('dragover', e => {
       if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) {
@@ -1079,6 +1127,31 @@ class UIController {
       this.showStatus('Could not access the clipboard; the prompt was placed in the editor instead.');
     }
     setTimeout(() => this.updateStatus(), 4000);
+  }
+
+  // Takes the pictures out of the original Word document and adds them as figure1, figure2, ...
+  async importDocxImages(file) {
+    let result;
+    try {
+      result = await extractDocxImages(file);
+    } catch (error) {
+      this.showError(this.escapeHtml(`"${file.name}": could not read this Word document (.docx only).`));
+      setTimeout(() => this.hideError(), 6000);
+      return;
+    }
+    // Replace the figures of an earlier import so the numbering stays in sync
+    [...this.files.keys()].filter(name => /^figure\d+\./.test(name)).forEach(name => this.removeFile(name));
+    if (result.images.length === 0) {
+      this.showStatus(result.total === 0
+        ? `No images found in "${file.name}".`
+        : `No supported images found in "${file.name}" (${result.skipped.join(', ')}).`);
+    } else {
+      this.addFiles(result.images);
+      let message = `${result.images.length} image(s) from "${file.name}" added as figure1-figure${result.total}.`;
+      if (result.skipped.length > 0) message += ` Skipped (unsupported format): ${result.skipped.join(', ')}.`;
+      this.showStatus(message);
+    }
+    setTimeout(() => this.updateStatus(), 6000);
   }
 
   // Adds files; with insertRefs, also inserts a reference at the cursor (drop/paste)
