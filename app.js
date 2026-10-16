@@ -106,9 +106,8 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
 const IMAGE_MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp' };
-// Extracts the images of a .docx in document order as figure1.<ext>, figure2.<ext>, ...
-// (the names the AI prompt uses). Header/footer images are ignored; unsupported formats are skipped
-// but keep their number, so the numbering matches the order of the pictures in the document.
+// Lists the images of a .docx body in document order (header/footer images are not included).
+// Each item is { ext, blob } where blob is null for formats we cannot use (emf, wmf, tiff, ...).
 async function extractDocxImages(file) {
   const zip = await JSZip.loadAsync(file);
   const documentFile = zip.file('word/document.xml');
@@ -124,25 +123,19 @@ async function extractDocxImages(file) {
   // mc:Fallback holds a second (VML) copy of every DrawingML picture
   const xml = (await documentFile.async('string')).replace(/<mc:Fallback>[\s\S]*?<\/mc:Fallback>/g, '');
   const seen = new Set();
-  const images = [];
-  const skipped = [];
+  const items = [];
   for (const match of xml.matchAll(/<(?:a:blip|v:imagedata)\b[^>]*?\sr:(?:embed|id)="([^"]+)"/g)) {
     const target = rels.get(match[1]);
     if (!target) continue;
     const path = target.startsWith('/') ? target.slice(1) : `word/${target}`;
     if (seen.has(path)) continue;
     seen.add(path);
-    const number = seen.size;
     const ext = fileExtension(path);
     const entry = zip.file(path);
-    if (!entry || !IMAGE_EXTENSIONS.includes(ext)) {
-      skipped.push(`figure${number} (${ext || 'unknown'})`);
-      continue;
-    }
-    const blob = await entry.async('blob');
-    images.push(new File([blob], `figure${number}.${ext}`, { type: IMAGE_MIME[ext] }));
+    const usable = entry && IMAGE_EXTENSIONS.includes(ext);
+    items.push({ ext, blob: usable ? await entry.async('blob') : null });
   }
-  return { images, skipped, total: seen.size };
+  return items;
 }
 
 // Matches ![alt](target) (image) and [text](target) (attachment link) in plain quiz text
@@ -1154,27 +1147,118 @@ class UIController {
     return count;
   }
 
-  // Takes the pictures out of the original Word document and adds them as figure1, figure2, ...
+  // Reads the images of a Word document and lets the user choose which ones the AI numbered
   async importDocxImages(file) {
-    let result;
+    let items;
     try {
-      result = await extractDocxImages(file);
+      items = await extractDocxImages(file);
     } catch (error) {
       this.showError(this.escapeHtml(`"${file.name}": could not read this Word document (.docx only).`));
       setTimeout(() => this.hideError(), 6000);
       return;
     }
+    if (items.length === 0) {
+      this.showStatus(`No images found in "${file.name}".`);
+      setTimeout(() => this.updateStatus(), 6000);
+      return;
+    }
+    this.showDocxDialog(file.name, items);
+  }
+
+  // Dialog with a thumbnail per image; checked images are numbered figure1, figure2, ... in order
+  showDocxDialog(docName, items) {
+    const overlay = document.createElement('div');
+    overlay.className = 'docx-overlay';
+    const box = document.createElement('div');
+    box.className = 'docx-dialog';
+    const title = document.createElement('h3');
+    title.textContent = `Images in ${docName}`;
+    const hint = document.createElement('p');
+    hint.className = 'help-text';
+    hint.textContent = 'Uncheck images the AI did not number (logo on the cover page, decoration, ...). Checked images become figure1, figure2, ... in this order.';
+    const list = document.createElement('ul');
+    list.className = 'docx-list';
+
+    const urls = [];
+    const rows = items.map(item => {
+      const li = document.createElement('li');
+      const label = document.createElement('label');
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.checked = true;
+      const name = document.createElement('span');
+      name.className = 'docx-name';
+      label.append(check, name);
+      li.appendChild(label);
+      if (item.blob) {
+        const img = document.createElement('img');
+        const url = URL.createObjectURL(item.blob);
+        urls.push(url);
+        img.src = url;
+        img.alt = '';
+        li.appendChild(img);
+      } else {
+        const note = document.createElement('span');
+        note.className = 'help-text';
+        note.textContent = `unsupported format (${item.ext || 'unknown'}) - keeps its number, no file is added`;
+        li.appendChild(note);
+      }
+      list.appendChild(li);
+      return { item, check, name, li };
+    });
+
+    const renumber = () => {
+      let n = 0;
+      rows.forEach(row => {
+        row.li.classList.toggle('docx-off', !row.check.checked);
+        row.name.textContent = row.check.checked ? `figure${++n}` : 'not used';
+      });
+    };
+    rows.forEach(row => row.check.addEventListener('change', renumber));
+    renumber();
+
+    const close = () => {
+      urls.forEach(url => URL.revokeObjectURL(url));
+      overlay.remove();
+    };
+    const buttons = document.createElement('div');
+    buttons.className = 'docx-buttons';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn btn--outline';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', close);
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'btn btn--primary';
+    add.id = 'docxAddBtn';
+    add.textContent = 'Add images';
+    add.addEventListener('click', () => {
+      const chosen = [];
+      let n = 0;
+      rows.forEach(row => {
+        if (!row.check.checked) return;
+        n++;
+        if (row.item.blob) chosen.push(new File([row.item.blob], `figure${n}.${row.item.ext}`, { type: IMAGE_MIME[row.item.ext] }));
+      });
+      close();
+      this.applyDocxImages(docName, chosen, n);
+    });
+    buttons.append(cancel, add);
+    box.append(title, hint, list, buttons);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  }
+
+  applyDocxImages(docName, images, total) {
     // Replace the figures of an earlier import so the numbering stays in sync
     [...this.files.keys()].filter(name => /^figure\d+\./.test(name)).forEach(name => this.removeFile(name));
-    if (result.images.length === 0) {
-      this.showStatus(result.total === 0
-        ? `No images found in "${file.name}".`
-        : `No supported images found in "${file.name}" (${result.skipped.join(', ')}).`);
+    if (images.length === 0) {
+      this.showStatus('No images added.');
     } else {
-      this.addFiles(result.images);
+      this.addFiles(images);
       const fixed = this.fixFigureExtensions();
-      let message = `${result.images.length} image(s) from "${file.name}" added as figure1-figure${result.total}.`;
-      if (result.skipped.length > 0) message += ` Skipped (unsupported format): ${result.skipped.join(', ')}.`;
+      let message = `${images.length} image(s) from "${docName}" added as figure1-figure${total}.`;
       if (fixed > 0) message += ` Corrected the file extension of ${fixed} reference(s) in the text.`;
       this.showStatus(message);
     }
