@@ -189,7 +189,7 @@ class Text2QTIParser {
           }
           continue; // parseQuestion advances currentLine
         } else if (line !== '' && !/^(Title|Points):/.test(line)) {
-          this.warnings.push(`Line ignored (not part of a question): "${this.shorten(line)}"`);
+          this.warnings.push({ message: `Line ignored (not part of a question): "${this.shorten(line)}"`, line: this.currentLine });
         }
 
         this.currentLine++;
@@ -198,7 +198,7 @@ class Text2QTIParser {
       this.quiz.questions.forEach((q, i) => this.validateQuestion(q, i));
       this.collectResources();
       if (this.quiz.questions.length === 0 && this.lines.some(l => l.trim() !== '')) {
-        this.warnings.push('No questions found. Questions must start with a number and a period, like "1. Question text".');
+        this.warnings.push({ message: 'No questions found. Questions must start with a number and a period, like "1. Question text".', line: null });
       }
 
       return { quiz: this.quiz, errors: this.errors, warnings: this.warnings };
@@ -240,6 +240,7 @@ class Text2QTIParser {
   parseQuestion() {
     const question = {
       number: null,
+      line: this.currentLine,
       title: '',
       text: '',
       points: 1,
@@ -261,7 +262,7 @@ class Text2QTIParser {
       } else if (line.startsWith('Points:')) {
         const points = this.parsePoints(line.substring('Points:'.length).trim());
         if (isNaN(points)) {
-          this.warnings.push(`Invalid points value "${this.shorten(line)}", using 1 point.`);
+          this.warnings.push({ message: `Invalid points value "${this.shorten(line)}", using 1 point.`, line: lookbackLine });
         } else {
           question.points = points;
         }
@@ -359,7 +360,7 @@ class Text2QTIParser {
       }
       // Marker left by the AI prompt for answers it could not determine
       else if (/^REVIEW:/i.test(trimmed)) {
-        this.warnings.push(`Question ${question.number}: ${trimmed.substring(7).trim() || 'needs review'}`);
+        this.warnings.push({ message: `Question ${question.number}: ${trimmed.substring(7).trim() || 'needs review'}`, line: question.line });
       }
       // Continuation of the previous line
       else if (trimmed !== '') {
@@ -373,7 +374,7 @@ class Text2QTIParser {
         } else if (lastTarget === 'general' || lastTarget === 'correct' || lastTarget === 'incorrect') {
           question.feedback[lastTarget] += ' ' + trimmed;
         } else {
-          this.warnings.push(`Question ${question.number}: line ignored: "${this.shorten(trimmed)}"`);
+          this.warnings.push({ message: `Question ${question.number}: line ignored: "${this.shorten(trimmed)}"`, line: this.currentLine });
         }
       }
 
@@ -443,28 +444,28 @@ class Text2QTIParser {
           if (!this.fileNames.has(target)) {
             if (!warned.has(label + target)) {
               warned.add(label + target);
-              this.warnings.push(`${label}: file "${target}" has not been added (use "Add files").`);
+              this.warnings.push({ message: `${label}: file "${target}" has not been added (use "Add files").`, line: q.line });
             }
             continue;
           }
           used.add(target);
           if (bang && !alt.trim() && !warned.has('alt' + target)) {
             warned.add('alt' + target);
-            this.warnings.push(`${label}: image "${target}" has no description; write it as ![description](${target}).`);
+            this.warnings.push({ message: `${label}: image "${target}" has no description; write it as ![description](${target}).`, line: q.line });
           }
         }
       });
     });
     this.quiz.resources = [...used];
     this.fileNames.forEach(name => {
-      if (!used.has(name)) this.warnings.push(`File "${name}" is not used in any question.`);
+      if (!used.has(name)) this.warnings.push({ message: `File "${name}" is not used in any question.`, line: null });
     });
   }
 
   // Flags problems that would give a wrong or unusable question after import
   validateQuestion(q, index) {
     const label = `Question ${q.number || index + 1}`;
-    const warn = msg => this.warnings.push(`${label}: ${msg}`);
+    const warn = msg => this.warnings.push({ message: `${label}: ${msg}`, line: q.line });
 
     if (!q.text.trim()) {
       warn('has no question text.');
@@ -1013,12 +1014,55 @@ class UIController {
 
   showWarnings(warnings) {
     if (warnings.length === 0) {
+      this.warnings = [];
       this.hideWarnings();
       return;
     }
-    const items = warnings.map(w => `<li>${this.escapeHtml(w)}</li>`).join('');
-    this.warningContainer.innerHTML = `<strong>Check before importing (${warnings.length}):</strong><ul>${items}</ul>`;
-    this.warningContainer.style.display = 'block';
+    this.warnings = warnings;
+    this.warningIndex = Math.min(this.warningIndex || 0, warnings.length - 1);
+    this.renderWarning();
+  }
+
+  // Shows one warning at a time, with prev/next arrows and a jump-to-line button
+  renderWarning() {
+    const total = this.warnings.length;
+    const warning = this.warnings[this.warningIndex];
+    const multiple = total > 1;
+    const nav = (dir, label, arrow) =>
+      `<button type="button" class="btn btn--outline warning-nav" data-dir="${dir}" aria-label="${label}"${multiple ? '' : ' disabled'}>${arrow}</button>`;
+    this.warningContainer.innerHTML =
+      `<strong class="warning-title">Check before importing</strong>` +
+      nav(-1, 'Previous warning', '&larr;') +
+      `<span class="warning-count">${this.warningIndex + 1} / ${total}</span>` +
+      nav(1, 'Next warning', '&rarr;') +
+      `<span class="warning-message">${this.escapeHtml(warning.message)}</span>` +
+      (warning.line !== null && warning.line !== undefined
+        ? '<button type="button" class="btn btn--outline warning-jump">Go to question</button>'
+        : '');
+    this.warningContainer.querySelectorAll('.warning-nav').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this.warningIndex = (this.warningIndex + Number(btn.dataset.dir) + total) % total;
+        this.renderWarning();
+      });
+    });
+    const jump = this.warningContainer.querySelector('.warning-jump');
+    if (jump) jump.addEventListener('click', () => this.jumpToLine(warning.line));
+    this.warningContainer.style.display = 'flex';
+  }
+
+  // Selects the given (0-based) line in the editor and scrolls it into view
+  jumpToLine(line) {
+    const lines = this.editor.value.split('\n');
+    if (line >= lines.length) return;
+    const start = lines.slice(0, line).reduce((sum, l) => sum + l.length + 1, 0);
+    const end = start + lines[line].length;
+    const style = getComputedStyle(this.editor);
+    const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.4;
+    // Scroll first (measuring wrapped lines would need a mirror element; this is close enough)
+    this.editor.focus();
+    this.editor.setSelectionRange(start, end);
+    this.editor.scrollTop = Math.max(0, line * lineHeight - this.editor.clientHeight / 3);
+    this.editor.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
   hideWarnings() {
